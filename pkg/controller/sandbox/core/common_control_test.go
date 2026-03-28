@@ -1250,3 +1250,363 @@ func TestCommonControl_handleInplaceUpdateSandbox(t *testing.T) {
 		t.Errorf("Expected done to be true when revision is consistent and inplace update is completed")
 	}
 }
+
+func TestCommonControl_createPod_WithSidecarInjection(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = agentsv1alpha1.AddToScheme(scheme)
+
+	tests := []struct {
+		name                    string
+		sandbox                 *agentsv1alpha1.Sandbox
+		configMap               *corev1.ConfigMap
+		featureGateEnabled      bool
+		expectInitContainers    int
+		expectContainers        int
+		expectMainContainerEnvs int
+		expectMainVolumeMounts  int
+		expectVolumes           int
+	}{
+		{
+			name: "no injection - no annotations",
+			sandbox: &agentsv1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sandbox",
+					Namespace: "default",
+				},
+				Spec: agentsv1alpha1.SandboxSpec{
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{Name: "main", Image: "nginx"},
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap:               nil,
+			featureGateEnabled:      true,
+			expectInitContainers:    0,
+			expectContainers:        1,
+			expectMainContainerEnvs: 0,
+			expectMainVolumeMounts:  0,
+			expectVolumes:           0,
+		},
+		{
+			name: "runtime injection only",
+			sandbox: &agentsv1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sandbox",
+					Namespace: "default",
+					Annotations: map[string]string{
+						agentsv1alpha1.ShouldInjectAgentRuntime: "true",
+					},
+				},
+				Spec: agentsv1alpha1.SandboxSpec{
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{Name: "main", Image: "nginx"},
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      sandboxInjectionConfigName,
+					Namespace: utils.DefaultSandboxDeployNamespace,
+				},
+				Data: map[string]string{
+					KEY_RUNTIME_INJECTION_CONFIG: `{
+						"mainContainer": {
+							"name": "",
+							"env": [
+								{"name": "RUNTIME_ENV", "value": "test"},
+								{"name": "DEBUG", "value": "true"}
+							],
+							"volumeMounts": []
+						},
+						"csiSidecar": [{
+							"name": "runtime-sidecar",
+							"image": "runtime:v1"
+						}],
+						"volume": []
+					}`,
+				},
+			},
+			featureGateEnabled:      true,
+			expectInitContainers:    1,
+			expectContainers:        1,
+			expectMainContainerEnvs: 2,
+			expectMainVolumeMounts:  0,
+			expectVolumes:           0,
+		},
+		{
+			name: "csi injection only",
+			sandbox: &agentsv1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sandbox",
+					Namespace: "default",
+					Annotations: map[string]string{
+						agentsv1alpha1.ShouldInjectCsiMount: "true",
+					},
+				},
+				Spec: agentsv1alpha1.SandboxSpec{
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{Name: "main", Image: "nginx"},
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      sandboxInjectionConfigName,
+					Namespace: utils.DefaultSandboxDeployNamespace,
+				},
+				Data: map[string]string{
+					KEY_CSI_INJECTION_CONFIG: `{
+						"mainContainer": {
+							"name": "",
+							"env": [],
+							"volumeMounts": [
+								{"name": "csi-volume", "mountPath": "/mnt/csi"},
+								{"name": "data-volume", "mountPath": "/data"}
+							]
+						},
+						"csiSidecar": [{
+							"name": "csi-sidecar",
+							"image": "csi:v1"
+						}],
+						"volume": [
+							{"name": "csi-volume", "emptyDir": {}},
+							{"name": "data-volume", "emptyDir": {}}
+						]
+					}`,
+				},
+			},
+			featureGateEnabled:      true,
+			expectInitContainers:    0,
+			expectContainers:        2,
+			expectMainContainerEnvs: 0,
+			expectMainVolumeMounts:  2,
+			expectVolumes:           2,
+		},
+		{
+			name: "both runtime and csi injection",
+			sandbox: &agentsv1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sandbox",
+					Namespace: "default",
+					Annotations: map[string]string{
+						agentsv1alpha1.ShouldInjectAgentRuntime: "true",
+						agentsv1alpha1.ShouldInjectCsiMount:     "true",
+					},
+				},
+				Spec: agentsv1alpha1.SandboxSpec{
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{Name: "main", Image: "nginx"},
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      sandboxInjectionConfigName,
+					Namespace: utils.DefaultSandboxDeployNamespace,
+				},
+				Data: map[string]string{
+					KEY_RUNTIME_INJECTION_CONFIG: `{
+						"mainContainer": {
+							"name": "",
+							"env": [{"name": "RUNTIME", "value": "enabled"}],
+							"volumeMounts": []
+						},
+						"csiSidecar": [{
+							"name": "runtime-sidecar",
+							"image": "runtime:v1"
+						}],
+						"volume": []
+					}`,
+					KEY_CSI_INJECTION_CONFIG: `{
+						"mainContainer": {
+							"name": "",
+							"env": [],
+							"volumeMounts": [{"name": "csi-vol", "mountPath": "/csi"}]
+						},
+						"csiSidecar": [{
+							"name": "csi-sidecar",
+							"image": "csi:v1"
+						}],
+						"volume": [{"name": "csi-vol", "emptyDir": {}}]
+					}`,
+				},
+			},
+			featureGateEnabled:      true,
+			expectInitContainers:    1,
+			expectContainers:        2,
+			expectMainContainerEnvs: 1,
+			expectMainVolumeMounts:  1,
+			expectVolumes:           1,
+		},
+		{
+			name: "feature gate disabled - no injection",
+			sandbox: &agentsv1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sandbox",
+					Namespace: "default",
+					Annotations: map[string]string{
+						agentsv1alpha1.ShouldInjectAgentRuntime: "true",
+					},
+				},
+				Spec: agentsv1alpha1.SandboxSpec{
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{Name: "main", Image: "nginx"},
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      sandboxInjectionConfigName,
+					Namespace: utils.DefaultSandboxDeployNamespace,
+				},
+				Data: map[string]string{
+					KEY_RUNTIME_INJECTION_CONFIG: `{
+						"mainContainer": {"name": "", "env": [{"name": "ENV", "value": "val"}], "volumeMounts": []},
+						"csiSidecar": [{"name": "sidecar", "image": "sidecar:v1"}],
+						"volume": []
+					}`,
+				},
+			},
+			featureGateEnabled:      false,
+			expectInitContainers:    0,
+			expectContainers:        1,
+			expectMainContainerEnvs: 0,
+			expectMainVolumeMounts:  0,
+			expectVolumes:           0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Feature gate setup
+			if tt.featureGateEnabled {
+				_ = utilfeature.DefaultMutableFeatureGate.Set("SandboxCreatePodInjectConfigGate=true")
+				t.Cleanup(func() {
+					_ = utilfeature.DefaultMutableFeatureGate.Set("SandboxCreatePodInjectConfigGate=false")
+				})
+			} else {
+				_ = utilfeature.DefaultMutableFeatureGate.Set("SandboxCreatePodInjectConfigGate=false")
+			}
+
+			// Build client with configmap if needed
+			objs := []client.Object{tt.sandbox}
+			if tt.configMap != nil {
+				objs = append(objs, tt.configMap)
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+			control := &commonControl{
+				Client:               fakeClient,
+				recorder:             record.NewFakeRecorder(10),
+				inplaceUpdateControl: inplaceupdate.NewInPlaceUpdateControl(fakeClient, inplaceupdate.DefaultGeneratePatchBodyFunc),
+			}
+
+			newStatus := &agentsv1alpha1.SandboxStatus{
+				UpdateRevision: "test-revision",
+			}
+
+			// Call createPod
+			pod, err := control.createPod(context.TODO(), tt.sandbox, newStatus)
+			if err != nil {
+				t.Fatalf("createPod() unexpected error: %v", err)
+			}
+
+			// Verify InitContainers
+			if len(pod.Spec.InitContainers) != tt.expectInitContainers {
+				t.Errorf("expected %d InitContainers, got %d", tt.expectInitContainers, len(pod.Spec.InitContainers))
+			}
+
+			// Verify Containers
+			if len(pod.Spec.Containers) != tt.expectContainers {
+				t.Errorf("expected %d Containers, got %d", tt.expectContainers, len(pod.Spec.Containers))
+			}
+
+			// Find main container
+			var mainContainer *corev1.Container
+			for i := range pod.Spec.Containers {
+				if pod.Spec.Containers[i].Name == "main" {
+					mainContainer = &pod.Spec.Containers[i]
+					break
+				}
+			}
+
+			if mainContainer == nil {
+				t.Fatal("main container not found")
+			}
+
+			// Verify main container envs
+			if len(mainContainer.Env) != tt.expectMainContainerEnvs {
+				t.Errorf("expected %d envs in main container, got %d", tt.expectMainContainerEnvs, len(mainContainer.Env))
+			}
+
+			// Verify main container volume mounts
+			if len(mainContainer.VolumeMounts) != tt.expectMainVolumeMounts {
+				t.Errorf("expected %d volume mounts in main container, got %d", tt.expectMainVolumeMounts, len(mainContainer.VolumeMounts))
+			}
+
+			// Verify volumes
+			if len(pod.Spec.Volumes) != tt.expectVolumes {
+				t.Errorf("expected %d volumes, got %d", tt.expectVolumes, len(pod.Spec.Volumes))
+			}
+
+			// Verify runtime sidecar in InitContainers
+			if tt.expectInitContainers > 0 {
+				runtimeFound := false
+				for _, ic := range pod.Spec.InitContainers {
+					if ic.Name == "runtime-sidecar" {
+						runtimeFound = true
+						break
+					}
+				}
+				if !runtimeFound {
+					t.Error("runtime sidecar not found in InitContainers")
+				}
+			}
+
+			// Verify csi sidecar in Containers
+			if tt.expectContainers > 1 {
+				csiFound := false
+				for _, c := range pod.Spec.Containers {
+					if c.Name == "csi-sidecar" {
+						csiFound = true
+						break
+					}
+				}
+				if !csiFound {
+					t.Error("csi sidecar not found in Containers")
+				}
+			}
+		})
+	}
+}

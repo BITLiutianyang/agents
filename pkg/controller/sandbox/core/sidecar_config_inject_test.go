@@ -23,7 +23,7 @@ func TestSetCSIMountContainer(t *testing.T) {
 
 	tests := []struct {
 		name                string
-		template            *corev1.PodTemplateSpec
+		template            *corev1.PodSpec
 		config              SidecarInjectConfig
 		expectedContainers  int
 		expectedVolumes     int
@@ -32,13 +32,11 @@ func TestSetCSIMountContainer(t *testing.T) {
 	}{
 		{
 			name: "empty template with CSI config",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:latest",
-						},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
 					},
 				},
 			},
@@ -76,17 +74,15 @@ func TestSetCSIMountContainer(t *testing.T) {
 		},
 		{
 			name: "template with existing volumes - no duplicates",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:latest",
-						},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
 					},
-					Volumes: []corev1.Volume{
-						{Name: "mount-root", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					},
+				},
+				Volumes: []corev1.Volume{
+					{Name: "mount-root", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				},
 			},
 			config: SidecarInjectConfig{
@@ -110,15 +106,13 @@ func TestSetCSIMountContainer(t *testing.T) {
 		},
 		{
 			name: "template with existing envs - no duplicates",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:latest",
-							Env: []corev1.EnvVar{
-								{Name: "ENV1", Value: "existing-value"},
-							},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
+						Env: []corev1.EnvVar{
+							{Name: "ENV1", Value: "existing-value"},
 						},
 					},
 				},
@@ -140,10 +134,8 @@ func TestSetCSIMountContainer(t *testing.T) {
 		},
 		{
 			name: "empty containers list",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{},
-				},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{},
 			},
 			config: SidecarInjectConfig{
 				MainContainer: corev1.Container{
@@ -164,18 +156,18 @@ func TestSetCSIMountContainer(t *testing.T) {
 			setCSIMountContainer(ctx, tt.template, tt.config)
 
 			// Verify container count
-			if len(tt.template.Spec.Containers) != tt.expectedContainers {
-				t.Errorf("expected %d containers, got %d", tt.expectedContainers, len(tt.template.Spec.Containers))
+			if len(tt.template.Containers) != tt.expectedContainers {
+				t.Errorf("expected %d containers, got %d", tt.expectedContainers, len(tt.template.Containers))
 			}
 
 			// Verify volume count
-			if len(tt.template.Spec.Volumes) != tt.expectedVolumes {
-				t.Errorf("expected %d volumes, got %d", tt.expectedVolumes, len(tt.template.Spec.Volumes))
+			if len(tt.template.Volumes) != tt.expectedVolumes {
+				t.Errorf("expected %d volumes, got %d", tt.expectedVolumes, len(tt.template.Volumes))
 			}
 
 			// Verify main container env count
-			if len(tt.template.Spec.Containers) > 0 {
-				mainContainer := tt.template.Spec.Containers[0]
+			if len(tt.template.Containers) > 0 {
+				mainContainer := tt.template.Containers[0]
 				if len(mainContainer.Env) != tt.expectedEnvCount {
 					t.Errorf("expected %d env vars, got %d", tt.expectedEnvCount, len(mainContainer.Env))
 				}
@@ -194,7 +186,7 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 
 	tests := []struct {
 		name                     string
-		template                 *corev1.PodTemplateSpec
+		template                 *corev1.PodSpec
 		config                   SidecarInjectConfig
 		expectedInitContainers   int
 		expectedContainers       int
@@ -205,13 +197,11 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 	}{
 		{
 			name: "empty template with runtime config",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:latest",
-						},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
 					},
 				},
 			},
@@ -249,14 +239,12 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 		},
 		{
 			name: "template with existing init containers",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					InitContainers: []corev1.Container{
-						{Name: "existing-init", Image: "init:latest"},
-					},
-					Containers: []corev1.Container{
-						{Name: "main-container", Image: "nginx:latest"},
-					},
+			template: &corev1.PodSpec{
+				InitContainers: []corev1.Container{
+					{Name: "existing-init", Image: "init:latest"},
+				},
+				Containers: []corev1.Container{
+					{Name: "main-container", Image: "nginx:latest"},
 				},
 			},
 			config: SidecarInjectConfig{
@@ -277,11 +265,9 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 		},
 		{
 			name: "template without init containers",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{Name: "main-container", Image: "nginx:latest"},
-					},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "main-container", Image: "nginx:latest"},
 				},
 			},
 			config: SidecarInjectConfig{
@@ -299,10 +285,8 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 		},
 		{
 			name: "empty containers list",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{},
-				},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{},
 			},
 			config: SidecarInjectConfig{
 				MainContainer: corev1.Container{
@@ -319,13 +303,11 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 		},
 		{
 			name: "multiple runtime sidecars",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:latest",
-						},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
 					},
 				},
 			},
@@ -353,17 +335,15 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 		},
 		{
 			name: "override existing lifecycle with config",
-			template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:latest",
-							Lifecycle: &corev1.Lifecycle{
-								PostStart: &corev1.LifecycleHandler{
-									Exec: &corev1.ExecAction{
-										Command: []string{"echo", "old"},
-									},
+			template: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
+						Lifecycle: &corev1.Lifecycle{
+							PostStart: &corev1.LifecycleHandler{
+								Exec: &corev1.ExecAction{
+									Command: []string{"echo", "old"},
 								},
 							},
 						},
@@ -399,18 +379,18 @@ func TestSetAgentRuntimeContainer(t *testing.T) {
 			setAgentRuntimeContainer(ctx, tt.template, tt.config)
 
 			// Verify init container count
-			if len(tt.template.Spec.InitContainers) != tt.expectedInitContainers {
-				t.Errorf("expected %d init containers, got %d", tt.expectedInitContainers, len(tt.template.Spec.InitContainers))
+			if len(tt.template.InitContainers) != tt.expectedInitContainers {
+				t.Errorf("expected %d init containers, got %d", tt.expectedInitContainers, len(tt.template.InitContainers))
 			}
 
 			// Verify container count
-			if len(tt.template.Spec.Containers) != tt.expectedContainers {
-				t.Errorf("expected %d containers, got %d", tt.expectedContainers, len(tt.template.Spec.Containers))
+			if len(tt.template.Containers) != tt.expectedContainers {
+				t.Errorf("expected %d containers, got %d", tt.expectedContainers, len(tt.template.Containers))
 			}
 
 			// Verify main container configuration
-			if len(tt.template.Spec.Containers) > 0 {
-				mainContainer := tt.template.Spec.Containers[0]
+			if len(tt.template.Containers) > 0 {
+				mainContainer := tt.template.Containers[0]
 
 				// Check env count
 				if len(mainContainer.Env) != tt.expectedEnvCount {

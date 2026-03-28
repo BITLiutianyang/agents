@@ -88,33 +88,33 @@ func parseInjectConfig(ctx context.Context, configKey string, configRaw map[stri
 // It configures the main container (first container in the spec) with CSI sidecar settings,
 // appends additional CSI sidecar containers, and mounts shared volumes.
 // Volumes are only added if they don't already exist in the template.
-func setCSIMountContainer(ctx context.Context, template *corev1.PodTemplateSpec, config SidecarInjectConfig) {
+func setCSIMountContainer(ctx context.Context, podSpec *corev1.PodSpec, config SidecarInjectConfig) {
 	log := logf.FromContext(ctx)
 
 	// set main container, the first container is the main container
-	if len(template.Spec.Containers) == 0 {
+	if len(podSpec.Containers) == 0 {
 		log.Info("no container found in sidecar template")
 		return
 	}
 
-	mainContainer := &template.Spec.Containers[0]
+	mainContainer := &podSpec.Containers[0]
 	setMainContainerWhenInjectCSISidecar(mainContainer, config)
 
 	// set csi sidecars
 	for _, csiSidecar := range config.Sidecars {
-		template.Spec.Containers = append(template.Spec.Containers, csiSidecar)
+		podSpec.Containers = append(podSpec.Containers, csiSidecar)
 	}
 
 	// set share volume
 	if len(config.Volumes) > 0 {
-		if template.Spec.Volumes == nil {
-			template.Spec.Volumes = make([]corev1.Volume, 0, len(config.Volumes))
+		if podSpec.Volumes == nil {
+			podSpec.Volumes = make([]corev1.Volume, 0, len(config.Volumes))
 		}
 		for _, vol := range config.Volumes {
-			if findVolumeByName(template.Spec.Volumes, vol.Name) {
+			if findVolumeByName(podSpec.Volumes, vol.Name) {
 				continue
 			}
-			template.Spec.Volumes = append(template.Spec.Volumes, vol)
+			podSpec.Volumes = append(podSpec.Volumes, vol)
 		}
 	}
 }
@@ -150,23 +150,23 @@ func setMainContainerWhenInjectCSISidecar(mainContainer *corev1.Container, confi
 // setAgentRuntimeContainer injects agent runtime configurations into the SandboxTemplate's pod spec.
 // It appends agent runtime containers as init containers and configures the main container (first container) with runtime settings.
 // The init containers run before the main containers to prepare the runtime environment.
-func setAgentRuntimeContainer(ctx context.Context, template *corev1.PodTemplateSpec, config SidecarInjectConfig) {
+func setAgentRuntimeContainer(ctx context.Context, podSpec *corev1.PodSpec, config SidecarInjectConfig) {
 	log := logf.FromContext(ctx)
 
 	// append init agent runtime container
-	if template.Spec.InitContainers == nil {
-		template.Spec.InitContainers = make([]corev1.Container, 0, 1)
+	if podSpec.InitContainers == nil {
+		podSpec.InitContainers = make([]corev1.Container, 0, 1)
 	}
-	template.Spec.InitContainers = append(template.Spec.InitContainers, config.Sidecars...)
+	podSpec.InitContainers = append(podSpec.InitContainers, config.Sidecars...)
 
-	if len(template.Spec.Containers) == 0 {
+	if len(podSpec.Containers) == 0 {
 		log.Info("no container found in sidecar template for agent runtime")
 		return
 	}
-	mainContainer := &template.Spec.Containers[0]
+	mainContainer := &podSpec.Containers[0]
 	setMainContainerConfigWhenInjectRuntimeSidecar(ctx, mainContainer, config)
 
-	template.Spec.Volumes = append(template.Spec.Volumes, config.Volumes...)
+	podSpec.Volumes = append(podSpec.Volumes, config.Volumes...)
 }
 
 func setMainContainerConfigWhenInjectRuntimeSidecar(ctx context.Context, mainContainer *corev1.Container, config SidecarInjectConfig) {
