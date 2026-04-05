@@ -267,6 +267,12 @@ func pickAnAvailableSandbox(ctx context.Context, opts infra.ClaimSandboxOptions,
 		return nil, "", NoAvailableError(template, "no stock")
 	}
 
+	// Get the SandboxSet's current update revision to prefer matching sandboxes.
+	var updateRevision string
+	if sbs, sErr := cache.GetSandboxSet(template); sErr == nil && sbs != nil {
+		updateRevision = sbs.Status.UpdateRevision
+	}
+
 	// Select available candidates and speculated creating sandboxes
 	availableCandidates := make([]*v1alpha1.Sandbox, 0, cnt)
 	speculatingCandidates := make([]*v1alpha1.Sandbox, 0, cnt)
@@ -307,9 +313,32 @@ func pickAnAvailableSandbox(ctx context.Context, opts infra.ClaimSandboxOptions,
 	}
 	log.Info("candidates collected", "available", len(availableCandidates), "speculating", len(speculatingCandidates))
 
-	// Step 1: select from available candidate
-	log.Info("picking from available candidates")
-	sbx, pickErr := pickFromCandidates(ctx, availableCandidates, pickCache)
+	// Split available candidates into updated (current revision) and old groups.
+	// Try updated candidates first to reduce conflicts with SandboxSet rolling update
+	// which targets old-version sandboxes.
+	var updatedCandidates, oldCandidates []*v1alpha1.Sandbox
+	if updateRevision != "" {
+		updatedCandidates = make([]*v1alpha1.Sandbox, 0, len(availableCandidates))
+		oldCandidates = make([]*v1alpha1.Sandbox, 0, len(availableCandidates))
+		for _, c := range availableCandidates {
+			if c.Labels[v1alpha1.LabelTemplateHash] == updateRevision {
+				updatedCandidates = append(updatedCandidates, c)
+			} else {
+				oldCandidates = append(oldCandidates, c)
+			}
+		}
+	} else {
+		updatedCandidates = availableCandidates
+	}
+
+	// Step 1: try to pick from updated (newest version) candidates first
+	log.Info("picking from available candidates", "updated", len(updatedCandidates), "old", len(oldCandidates))
+	sbx, pickErr := pickFromCandidates(ctx, updatedCandidates, pickCache)
+	if pickErr != nil && len(oldCandidates) > 0 {
+		// fall back to old candidates
+		log.Info("falling back to old available candidates")
+		sbx, pickErr = pickFromCandidates(ctx, oldCandidates, pickCache)
+	}
 	if pickErr == nil {
 		return AsSandbox(sbx, cache, client), infra.LockTypeUpdate, nil
 	}

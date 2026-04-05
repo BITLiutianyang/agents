@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -895,6 +896,115 @@ func TestSandboxSetDefaulter_HandleWithPersistentContents(t *testing.T) {
 					// Since we can't easily parse the JSON patch, we verify the logic condition
 					g.Expect(len(tt.expectedContents)).To(gomega.Equal(len(defaultPersistentContents)))
 				}
+			}
+		})
+	}
+}
+
+func TestSetDefaultUpdateStrategy(t *testing.T) {
+	default20pct := intstr.FromString("20%")
+	custom50pct := intstr.FromString("50%")
+
+	tests := []struct {
+		name                 string
+		strategy             v1alpha1.SandboxSetUpdateStrategy
+		expectMaxUnavailable *intstr.IntOrString
+	}{
+		{
+			name:                 "nil MaxUnavailable - should default to 20%",
+			strategy:             v1alpha1.SandboxSetUpdateStrategy{},
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "MaxUnavailable already set - should not be overridden",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				MaxUnavailable: &custom50pct,
+			},
+			expectMaxUnavailable: &custom50pct,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setDefaultUpdateStrategy(&tt.strategy)
+
+			if tt.expectMaxUnavailable == nil {
+				if tt.strategy.MaxUnavailable != nil {
+					t.Errorf("MaxUnavailable: expected nil, got %v", tt.strategy.MaxUnavailable)
+				}
+			} else {
+				if tt.strategy.MaxUnavailable == nil {
+					t.Errorf("MaxUnavailable: expected %v, got nil", tt.expectMaxUnavailable)
+				} else if *tt.strategy.MaxUnavailable != *tt.expectMaxUnavailable {
+					t.Errorf("MaxUnavailable: expected %v, got %v", tt.expectMaxUnavailable, tt.strategy.MaxUnavailable)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxSetDefaulter_HandleWithUpdateStrategy(t *testing.T) {
+	err := v1alpha1.AddToScheme(scheme.Scheme)
+	require.NoError(t, err)
+
+	default20pct := intstr.FromString("20%")
+	custom5 := intstr.FromInt32(5)
+
+	tests := []struct {
+		name                 string
+		sandboxSet           *v1alpha1.SandboxSet
+		expectMaxUnavailable *intstr.IntOrString
+	}{
+		{
+			name: "nil MaxUnavailable - should default to 20% via webhook",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 5,
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "c", Image: "nginx"}},
+							},
+						},
+					},
+				},
+			},
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "user-specified MaxUnavailable - should not be overridden",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 5,
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "c", Image: "nginx"}},
+							},
+						},
+					},
+					UpdateStrategy: v1alpha1.SandboxSetUpdateStrategy{
+						MaxUnavailable: &custom5,
+					},
+				},
+			},
+			expectMaxUnavailable: &custom5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewGomegaWithT(t)
+
+			setDefaultUpdateStrategy(&tt.sandboxSet.Spec.UpdateStrategy)
+
+			if tt.expectMaxUnavailable == nil {
+				g.Expect(tt.sandboxSet.Spec.UpdateStrategy.MaxUnavailable).To(gomega.BeNil())
+			} else {
+				g.Expect(tt.sandboxSet.Spec.UpdateStrategy.MaxUnavailable).NotTo(gomega.BeNil())
+				g.Expect(*tt.sandboxSet.Spec.UpdateStrategy.MaxUnavailable).To(gomega.Equal(*tt.expectMaxUnavailable))
 			}
 		})
 	}

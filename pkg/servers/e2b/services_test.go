@@ -305,6 +305,7 @@ func TestCreateSandbox(t *testing.T) {
 				Metadata: map[string]string{
 					models.ExtensionKeyClaimWithCSIMount_VolumeName: "test-csi-pv",
 					models.ExtensionKeyClaimWithCSIMount_MountPoint: "/mnt/data",
+					models.ExtensionKeyClaimTimeout:                 "10", // CSI mount needs more time
 				},
 			},
 			setup: func(t *testing.T, controller *Controller, clientSet *clients.ClientSet) {
@@ -357,7 +358,10 @@ func TestCreateSandbox(t *testing.T) {
 				tt.request.Metadata = make(map[string]string)
 			}
 			// mock runtime server is not supported in e2b layer, the runtime is tested in infra package
-			tt.request.Metadata[models.ExtensionKeyClaimTimeout] = "1" // let errors like "no stock" stop early
+			// only set default timeout if not already set
+			if _, exists := tt.request.Metadata[models.ExtensionKeyClaimTimeout]; !exists {
+				tt.request.Metadata[models.ExtensionKeyClaimTimeout] = "1" // let errors like "no stock" stop early
+			}
 			resp, apiError := controller.CreateSandbox(NewRequest(t, nil, tt.request, nil, user))
 			if tt.expectError != nil {
 				require.NotNil(t, apiError)

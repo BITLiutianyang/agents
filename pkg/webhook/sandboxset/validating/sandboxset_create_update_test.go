@@ -467,6 +467,73 @@ func TestSandboxSetValidatingHandler_Handle(t *testing.T) {
 			expectError:  true,
 			errorMessage: "maxUnavailable is invalid",
 		},
+		{
+			name: "Valid UpdateStrategy.MaxUnavailable - percentage value",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sbs",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 10,
+					UpdateStrategy: v1alpha1.SandboxSetUpdateStrategy{
+						MaxUnavailable: &intstr.IntOrString{Type: intstr.String, StrVal: "25%"},
+					},
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						TemplateRef: &v1alpha1.SandboxTemplateRef{
+							Name: "test-template",
+						},
+					},
+				},
+			},
+			expectAllow: true,
+			expectError: false,
+		},
+		{
+			name: "Valid UpdateStrategy.MaxUnavailable - integer value",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sbs",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 10,
+					UpdateStrategy: v1alpha1.SandboxSetUpdateStrategy{
+						MaxUnavailable: &intstr.IntOrString{Type: intstr.Int, IntVal: 3},
+					},
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						TemplateRef: &v1alpha1.SandboxTemplateRef{
+							Name: "test-template",
+						},
+					},
+				},
+			},
+			expectAllow: true,
+			expectError: false,
+		},
+		{
+			name: "Invalid UpdateStrategy.MaxUnavailable - invalid format",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sbs",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 10,
+					UpdateStrategy: v1alpha1.SandboxSetUpdateStrategy{
+						MaxUnavailable: &intstr.IntOrString{Type: intstr.String, StrVal: "invalid"},
+					},
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						TemplateRef: &v1alpha1.SandboxTemplateRef{
+							Name: "test-template",
+						},
+					},
+				},
+			},
+			expectAllow:  false,
+			expectError:  true,
+			errorMessage: "maxUnavailable is invalid",
+		},
 	}
 
 	for _, tt := range tests {

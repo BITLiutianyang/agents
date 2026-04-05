@@ -10,6 +10,7 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -70,6 +71,7 @@ func (h *SandboxSetDefaulter) Handle(_ context.Context, req admission.Request) a
 
 	clone := obj.DeepCopy()
 	setDefaultPodTemplate(obj.Spec.Template)
+	setDefaultUpdateStrategy(&obj.Spec.UpdateStrategy)
 
 	if req.Operation == admissionv1.Create && len(obj.Spec.PersistentContents) == 0 && len(defaultPersistentContents) > 0 {
 		obj.Spec.PersistentContents = defaultPersistentContents
@@ -86,6 +88,14 @@ func (h *SandboxSetDefaulter) Handle(_ context.Context, req admission.Request) a
 		return admission.PatchResponseFromRaw(req.Object.Raw, marshal)
 	}
 	return admission.Allowed("")
+}
+
+// setDefaultUpdateStrategy applies default values to the update strategy.
+func setDefaultUpdateStrategy(strategy *agentsv1alpha1.SandboxSetUpdateStrategy) {
+	if strategy.MaxUnavailable == nil {
+		defaultMaxUnavailable := intstr.FromString("20%")
+		strategy.MaxUnavailable = &defaultMaxUnavailable
+	}
 }
 
 func setDefaultPodTemplate(template *v1.PodTemplateSpec) {

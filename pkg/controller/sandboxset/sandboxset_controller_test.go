@@ -598,6 +598,7 @@ func TestReconcile_ScaleDown(t *testing.T) {
 		expectEvents []string
 		expectError  bool
 		checkFunc    func(t *testing.T, sandboxes []v1alpha1.Sandbox)
+		preSetup     func(sbs *v1alpha1.SandboxSet)
 	}{
 		{
 			name:     "scale down available sandboxes",
@@ -645,6 +646,10 @@ func TestReconcile_ScaleDown(t *testing.T) {
 				// available left
 				assert.True(t, strings.HasPrefix(sandboxes[0].Name, "available"))
 			},
+			preSetup: func(sbs *v1alpha1.SandboxSet) {
+				// Set UpdateRevision so that created sandboxes match the expected revision
+				sbs.Status.UpdateRevision = "6b86f949c"
+			},
 		},
 		{
 			name:     "scale down skips locked sandboxes",
@@ -684,6 +689,10 @@ func TestReconcile_ScaleDown(t *testing.T) {
 				Codec:    codec,
 			}
 			sbs := getSandboxSet(tt.replicas)
+			// Run preSetup if provided (e.g., to set UpdateRevision before creating sandboxes)
+			if tt.preSetup != nil {
+				tt.preSetup(sbs)
+			}
 			assert.NoError(t, k8sClient.Create(ctx, sbs))
 			CreateSandboxes(t, tt.request, sbs, k8sClient)
 

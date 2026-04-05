@@ -330,6 +330,90 @@ var _ = Describe("SandboxSet", func() {
 		})
 	})
 
+	Context("RollingUpdate tests", func() {
+		It("should keep AvailableReplicas>=9 with MaxUnavailable=1 during rolling update", func() {
+			By("Creating a SandboxSet with 10 replicas and UpdateStrategy.MaxUnavailable=1")
+			maxUnavailable := intstrutil.FromInt(1)
+			sandbox.Spec.Replicas = 10
+			sandbox.Spec.UpdateStrategy = agentsv1alpha1.SandboxSetUpdateStrategy{
+				MaxUnavailable: &maxUnavailable,
+			}
+			Expect(k8sClient.Create(ctx, sandbox)).To(Succeed())
+
+			By("Waiting for all 10 replicas to become available")
+			Eventually(func() int32 {
+				_ = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sandbox.Name,
+					Namespace: sandbox.Namespace,
+				}, sandbox)
+				return sandbox.Status.AvailableReplicas
+			}, time.Minute*5, time.Second*2).Should(Equal(int32(10)))
+
+			By("Triggering rolling update by changing container image")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      sandbox.Name,
+				Namespace: sandbox.Namespace,
+			}, sandbox)).To(Succeed())
+			sandbox.Spec.Template.Spec.Containers[0].Image = "nginx:stable-alpine3.20"
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+
+			By("Starting a monitor goroutine to detect AvailableReplicas<9 violations during rolling update")
+			violationCh := make(chan int32, 1)
+			doneCh := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-doneCh:
+						return
+					case <-ticker.C:
+						latest := &agentsv1alpha1.SandboxSet{}
+						if err := k8sClient.Get(ctx, types.NamespacedName{
+							Name:      sandbox.Name,
+							Namespace: sandbox.Namespace,
+						}, latest); err == nil {
+							if latest.Status.AvailableReplicas < 9 {
+								select {
+								case violationCh <- latest.Status.AvailableReplicas:
+								default:
+								}
+							}
+						}
+					}
+				}
+			}()
+
+			By("Waiting for rolling update to complete: UpdatedAvailableReplicas=10")
+			Eventually(func() int32 {
+				_ = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sandbox.Name,
+					Namespace: sandbox.Namespace,
+				}, sandbox)
+				return sandbox.Status.UpdatedAvailableReplicas
+			}, time.Minute*10, time.Second*2).Should(Equal(int32(10)))
+
+			close(doneCh)
+
+			By("Verifying AvailableReplicas never dropped below 9 during the rolling update")
+			select {
+			case v := <-violationCh:
+				Fail(fmt.Sprintf("AvailableReplicas dropped below 9 during rolling update: observed %d", v))
+			default:
+				// No violation detected
+			}
+
+			By("Verifying final state: all 10 replicas are updated and available")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      sandbox.Name,
+				Namespace: sandbox.Namespace,
+			}, sandbox)).To(Succeed())
+			Expect(sandbox.Status.UpdatedAvailableReplicas).To(Equal(int32(10)))
+			Expect(sandbox.Status.AvailableReplicas).To(Equal(int32(10)))
+		})
+	})
+
 	Context("VolumeClaimTemplates tests", func() {
 		It("should create sandbox with volumeClaimTemplates and volumeMounts correctly", func() {
 			By("Creating a SandboxSet with volumeClaimTemplates")

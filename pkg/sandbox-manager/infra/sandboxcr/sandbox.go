@@ -96,11 +96,12 @@ func (s *Sandbox) InplaceRefresh(ctx context.Context, deepcopy bool) error {
 func (s *Sandbox) retryUpdate(ctx context.Context, updateFunc UpdateFunc, modifier ModifierFunc) error {
 	log := klog.FromContext(ctx).WithValues("sandbox", klog.KObj(s.Sandbox))
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// get the latest sandbox
+		// get the latest sandbox from cache
 		sbx, err := s.Cache.GetClaimedSandbox(stateutils.GetSandboxID(s.Sandbox))
 		if err != nil {
 			return err
 		}
+
 		copied := sbx.DeepCopy()
 		modifier(copied)
 		updated, err := updateFunc(ctx, copied, metav1.UpdateOptions{})

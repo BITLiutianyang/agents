@@ -93,6 +93,14 @@ func validateSandboxSetSpec(spec agentsv1alpha1.SandboxSetSpec, fldPath *field.P
 		errList = append(errList, field.Invalid(fldPath.Child("scaleStrategy.maxUnavailable"), spec.ScaleStrategy.MaxUnavailable, "maxUnavailable is invalid"))
 	}
 
+	// Validate UpdateStrategy.MaxUnavailable if specified
+	if spec.UpdateStrategy.MaxUnavailable != nil {
+		if _, err := intstrutil.GetScaledValueFromIntOrPercent(
+			intstrutil.ValueOrDefault(spec.UpdateStrategy.MaxUnavailable, intstrutil.FromInt(0)), int(spec.Replicas), true); err != nil {
+			errList = append(errList, field.Invalid(fldPath.Child("updateStrategy.maxUnavailable"), spec.UpdateStrategy.MaxUnavailable, "maxUnavailable is invalid"))
+		}
+	}
+
 	return errList
 }
 
