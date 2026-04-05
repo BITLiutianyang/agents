@@ -943,6 +943,167 @@ func TestModifyPickedSandbox_CSIMount(t *testing.T) {
 	}
 }
 
+func TestPickAnAvailableSandbox_PrefersMatchingRevision(t *testing.T) {
+	utils.InitLogOutput()
+
+	origCreateSandbox := DefaultCreateSandbox
+	DefaultCreateSandbox = func(ctx context.Context, sbx *v1alpha1.Sandbox, client *clients.ClientSet, cache infra.CacheProvider) (*v1alpha1.Sandbox, error) {
+		if sbx.Name == "" && sbx.GenerateName != "" {
+			sbx.Name = sbx.GenerateName + rand.String(5)
+		}
+		created, err := origCreateSandbox(ctx, sbx, client, cache)
+		if err != nil {
+			return nil, err
+		}
+		created.Status = v1alpha1.SandboxStatus{
+			Phase: v1alpha1.SandboxRunning,
+			Conditions: []metav1.Condition{
+				{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue},
+			},
+			PodInfo: v1alpha1.PodInfo{PodIP: "1.2.3.4"},
+		}
+		created, err = client.ApiV1alpha1().Sandboxes(created.Namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, err
+		}
+		time.Sleep(50 * time.Millisecond)
+		return created, nil
+	}
+	t.Cleanup(func() { DefaultCreateSandbox = origCreateSandbox })
+
+	template := "test-prefer-template"
+	updateRevision := "rev-new-abc"
+	oldRevision := "rev-old-xyz"
+
+	tests := []struct {
+		name             string
+		matchingCount    int
+		nonMatchingCount int
+		expectMatching   bool
+	}{
+		{
+			name:           "all matching, picks matching",
+			matchingCount:  3,
+			expectMatching: true,
+		},
+		{
+			name:             "all non-matching, picks non-matching",
+			nonMatchingCount: 3,
+			expectMatching:   false,
+		},
+		{
+			name:             "mixed: should prefer matching",
+			matchingCount:    1,
+			nonMatchingCount: 5,
+			expectMatching:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testInfra, clientSet := NewTestInfra(t)
+
+			// Create the SandboxSet with UpdateRevision
+			sbs := &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      template,
+					Namespace: "default",
+				},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: int32(tt.matchingCount + tt.nonMatchingCount),
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "test"}}},
+						},
+					},
+				},
+				Status: v1alpha1.SandboxSetStatus{
+					UpdateRevision: updateRevision,
+				},
+			}
+			_, err := clientSet.ApiV1alpha1().SandboxSets("default").Create(t.Context(), sbs, metav1.CreateOptions{})
+			require.NoError(t, err)
+			_, err = clientSet.ApiV1alpha1().SandboxSets("default").UpdateStatus(t.Context(), sbs, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				return testInfra.HasTemplate(template)
+			}, 200*time.Millisecond, 5*time.Millisecond)
+
+			now := metav1.Now()
+			ownerRefs := []metav1.OwnerReference{*metav1.NewControllerRef(sbs, v1alpha1.SandboxSetControllerKind)}
+
+			// Create matching (new revision) sandboxes
+			for i := 0; i < tt.matchingCount; i++ {
+				sbx := &v1alpha1.Sandbox{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: fmt.Sprintf("match-%d", i), Namespace: "default",
+						Labels: map[string]string{
+							v1alpha1.LabelSandboxTemplate:  template,
+							v1alpha1.LabelSandboxIsClaimed: "false",
+							v1alpha1.LabelTemplateHash:     updateRevision,
+						},
+						Annotations: map[string]string{}, CreationTimestamp: now, OwnerReferences: ownerRefs,
+					},
+					Status: v1alpha1.SandboxStatus{
+						Phase:      v1alpha1.SandboxRunning,
+						Conditions: []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}},
+						PodInfo:    v1alpha1.PodInfo{PodIP: "1.2.3.4"},
+					},
+				}
+				CreateSandboxWithStatus(t, clientSet.SandboxClient, sbx)
+			}
+
+			// Create non-matching (old revision) sandboxes
+			for i := 0; i < tt.nonMatchingCount; i++ {
+				sbx := &v1alpha1.Sandbox{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: fmt.Sprintf("old-%d", i), Namespace: "default",
+						Labels: map[string]string{
+							v1alpha1.LabelSandboxTemplate:  template,
+							v1alpha1.LabelSandboxIsClaimed: "false",
+							v1alpha1.LabelTemplateHash:     oldRevision,
+						},
+						Annotations: map[string]string{}, CreationTimestamp: now, OwnerReferences: ownerRefs,
+					},
+					Status: v1alpha1.SandboxStatus{
+						Phase:      v1alpha1.SandboxRunning,
+						Conditions: []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}},
+						PodInfo:    v1alpha1.PodInfo{PodIP: "1.2.3.4"},
+					},
+				}
+				CreateSandboxWithStatus(t, clientSet.SandboxClient, sbx)
+			}
+
+			// Wait for cache sync
+			totalSandboxes := tt.matchingCount + tt.nonMatchingCount
+			require.Eventually(t, func() bool {
+				objs, err := testInfra.Cache.ListSandboxesInPool(template)
+				return err == nil && len(objs) >= totalSandboxes
+			}, 200*time.Millisecond, 5*time.Millisecond)
+
+			// Claim a sandbox
+			opts := infra.ClaimSandboxOptions{
+				User:         "test-user",
+				Template:     template,
+				ClaimTimeout: 100 * time.Millisecond,
+			}
+			opts, err = ValidateAndInitClaimOptions(opts)
+			require.NoError(t, err)
+
+			sbx, _, claimErr := testInfra.ClaimSandbox(t.Context(), opts)
+			require.NoError(t, claimErr)
+			require.NotNil(t, sbx)
+
+			hash := sbx.GetLabels()[v1alpha1.LabelTemplateHash]
+			if tt.expectMatching {
+				assert.Equal(t, updateRevision, hash, "should prefer sandbox with matching template hash")
+			} else {
+				assert.Equal(t, oldRevision, hash, "should fall back to non-matching sandbox")
+			}
+		})
+	}
+}
+
 func TestModifyPickedSandbox_InitRuntime(t *testing.T) {
 	tests := []struct {
 		name             string

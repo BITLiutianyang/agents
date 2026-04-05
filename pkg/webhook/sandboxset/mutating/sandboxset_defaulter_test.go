@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -896,6 +897,218 @@ func TestSandboxSetDefaulter_HandleWithPersistentContents(t *testing.T) {
 					g.Expect(len(tt.expectedContents)).To(gomega.Equal(len(defaultPersistentContents)))
 				}
 			}
+		})
+	}
+}
+
+func TestSetDefaultUpdateStrategy(t *testing.T) {
+	default20pct := intstr.FromString("20%")
+	custom5 := intstr.FromInt32(5)
+	custom50pct := intstr.FromString("50%")
+	zero := intstr.FromInt32(0)
+
+	tests := []struct {
+		name                 string
+		strategy             v1alpha1.SandboxSetUpdateStrategy
+		expectType           v1alpha1.RollingUpdateStrategyType
+		expectPartition      *intstr.IntOrString
+		expectMaxSurge       *intstr.IntOrString
+		expectMaxUnavailable *intstr.IntOrString
+	}{
+		{
+			name:                 "all nil - should default everything",
+			strategy:             v1alpha1.SandboxSetUpdateStrategy{},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &zero,
+			expectMaxSurge:       &default20pct,
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "Type set, rest nil - only rest defaulted",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				Type: v1alpha1.RecreateUpdateStrategyType,
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &zero,
+			expectMaxSurge:       &default20pct,
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "Partition set, rest nil - only rest defaulted",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				Partition: &custom5,
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &custom5,
+			expectMaxSurge:       &default20pct,
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "MaxSurge set, rest nil - only rest defaulted",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				MaxSurge: &custom5,
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &zero,
+			expectMaxSurge:       &custom5,
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "MaxUnavailable set, rest nil - only rest defaulted",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				MaxUnavailable: &custom50pct,
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &zero,
+			expectMaxSurge:       &default20pct,
+			expectMaxUnavailable: &custom50pct,
+		},
+		{
+			name: "all set - no defaulting applied",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				Type:           v1alpha1.RecreateUpdateStrategyType,
+				Partition:      &custom5,
+				MaxSurge:       &custom5,
+				MaxUnavailable: &custom50pct,
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &custom5,
+			expectMaxSurge:       &custom5,
+			expectMaxUnavailable: &custom50pct,
+		},
+		{
+			name: "Partition=0 explicitly set - should not be overridden",
+			strategy: v1alpha1.SandboxSetUpdateStrategy{
+				Partition: &zero,
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &zero,
+			expectMaxSurge:       &default20pct,
+			expectMaxUnavailable: &default20pct,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setDefaultUpdateStrategy(&tt.strategy)
+
+			if tt.strategy.Type != tt.expectType {
+				t.Errorf("Type: expected %v, got %v", tt.expectType, tt.strategy.Type)
+			}
+			if tt.expectPartition == nil {
+				if tt.strategy.Partition != nil {
+					t.Errorf("Partition: expected nil, got %v", tt.strategy.Partition)
+				}
+			} else {
+				if tt.strategy.Partition == nil {
+					t.Errorf("Partition: expected %v, got nil", tt.expectPartition)
+				} else if *tt.strategy.Partition != *tt.expectPartition {
+					t.Errorf("Partition: expected %v, got %v", tt.expectPartition, tt.strategy.Partition)
+				}
+			}
+			if tt.expectMaxSurge == nil {
+				if tt.strategy.MaxSurge != nil {
+					t.Errorf("MaxSurge: expected nil, got %v", tt.strategy.MaxSurge)
+				}
+			} else {
+				if tt.strategy.MaxSurge == nil {
+					t.Errorf("MaxSurge: expected %v, got nil", tt.expectMaxSurge)
+				} else if *tt.strategy.MaxSurge != *tt.expectMaxSurge {
+					t.Errorf("MaxSurge: expected %v, got %v", tt.expectMaxSurge, tt.strategy.MaxSurge)
+				}
+			}
+			if tt.expectMaxUnavailable == nil {
+				if tt.strategy.MaxUnavailable != nil {
+					t.Errorf("MaxUnavailable: expected nil, got %v", tt.strategy.MaxUnavailable)
+				}
+			} else {
+				if tt.strategy.MaxUnavailable == nil {
+					t.Errorf("MaxUnavailable: expected %v, got nil", tt.expectMaxUnavailable)
+				} else if *tt.strategy.MaxUnavailable != *tt.expectMaxUnavailable {
+					t.Errorf("MaxUnavailable: expected %v, got %v", tt.expectMaxUnavailable, tt.strategy.MaxUnavailable)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxSetDefaulter_HandleWithUpdateStrategy(t *testing.T) {
+	err := v1alpha1.AddToScheme(scheme.Scheme)
+	require.NoError(t, err)
+
+	default20pct := intstr.FromString("20%")
+	custom5 := intstr.FromInt32(5)
+	zero := intstr.FromInt32(0)
+
+	tests := []struct {
+		name                 string
+		sandboxSet           *v1alpha1.SandboxSet
+		expectType           v1alpha1.RollingUpdateStrategyType
+		expectPartition      *intstr.IntOrString
+		expectMaxSurge       *intstr.IntOrString
+		expectMaxUnavailable *intstr.IntOrString
+	}{
+		{
+			name: "all nil - should be defaulted via webhook",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 5,
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "c", Image: "nginx"}},
+							},
+						},
+					},
+				},
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &zero,
+			expectMaxSurge:       &default20pct,
+			expectMaxUnavailable: &default20pct,
+		},
+		{
+			name: "user-specified values - should not be overridden",
+			sandboxSet: &v1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: v1alpha1.SandboxSetSpec{
+					Replicas: 5,
+					EmbeddedSandboxTemplate: v1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "c", Image: "nginx"}},
+							},
+						},
+					},
+					UpdateStrategy: v1alpha1.SandboxSetUpdateStrategy{
+						Type:           v1alpha1.RecreateUpdateStrategyType,
+						Partition:      &custom5,
+						MaxSurge:       &custom5,
+						MaxUnavailable: &custom5,
+					},
+				},
+			},
+			expectType:           v1alpha1.RecreateUpdateStrategyType,
+			expectPartition:      &custom5,
+			expectMaxSurge:       &custom5,
+			expectMaxUnavailable: &custom5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewGomegaWithT(t)
+
+			setDefaultUpdateStrategy(&tt.sandboxSet.Spec.UpdateStrategy)
+
+			g.Expect(tt.sandboxSet.Spec.UpdateStrategy.Type).To(gomega.Equal(tt.expectType))
+			g.Expect(tt.sandboxSet.Spec.UpdateStrategy.Partition).NotTo(gomega.BeNil())
+			g.Expect(*tt.sandboxSet.Spec.UpdateStrategy.Partition).To(gomega.Equal(*tt.expectPartition))
+			g.Expect(tt.sandboxSet.Spec.UpdateStrategy.MaxSurge).NotTo(gomega.BeNil())
+			g.Expect(*tt.sandboxSet.Spec.UpdateStrategy.MaxSurge).To(gomega.Equal(*tt.expectMaxSurge))
+			g.Expect(tt.sandboxSet.Spec.UpdateStrategy.MaxUnavailable).NotTo(gomega.BeNil())
+			g.Expect(*tt.sandboxSet.Spec.UpdateStrategy.MaxUnavailable).To(gomega.Equal(*tt.expectMaxUnavailable))
 		})
 	}
 }

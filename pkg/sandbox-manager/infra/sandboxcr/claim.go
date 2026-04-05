@@ -267,6 +267,12 @@ func pickAnAvailableSandbox(ctx context.Context, opts infra.ClaimSandboxOptions,
 		return nil, "", NoAvailableError(template, "no stock")
 	}
 
+	// Get the SandboxSet's current update revision to prefer matching sandboxes.
+	var updateRevision string
+	if sbs, sErr := cache.GetSandboxSet(template); sErr == nil && sbs != nil {
+		updateRevision = sbs.Status.UpdateRevision
+	}
+
 	// Select available candidates and speculated creating sandboxes
 	availableCandidates := make([]*v1alpha1.Sandbox, 0, cnt)
 	speculatingCandidates := make([]*v1alpha1.Sandbox, 0, cnt)
@@ -307,9 +313,30 @@ func pickAnAvailableSandbox(ctx context.Context, opts infra.ClaimSandboxOptions,
 	}
 	log.Info("candidates collected", "available", len(availableCandidates), "speculating", len(speculatingCandidates))
 
-	// Step 1: select from available candidate
-	log.Info("picking from available candidates")
-	sbx, pickErr := pickFromCandidates(ctx, availableCandidates, pickCache)
+	// Split available candidates into matching (current revision) and non-matching groups.
+	// Try matching candidates first to reduce conflicts with SandboxSet rolling update
+	// which targets old-version sandboxes.
+	var matchingCandidates, nonMatchingCandidates []*v1alpha1.Sandbox
+	if updateRevision != "" {
+		for _, c := range availableCandidates {
+			if c.Labels[v1alpha1.LabelTemplateHash] == updateRevision {
+				matchingCandidates = append(matchingCandidates, c)
+			} else {
+				nonMatchingCandidates = append(nonMatchingCandidates, c)
+			}
+		}
+	} else {
+		matchingCandidates = availableCandidates
+	}
+
+	// Step 1: try to pick from matching (newest version) candidates first
+	log.Info("picking from available candidates", "matching", len(matchingCandidates), "nonMatching", len(nonMatchingCandidates))
+	sbx, pickErr := pickFromCandidates(ctx, matchingCandidates, pickCache)
+	if pickErr != nil && len(nonMatchingCandidates) > 0 {
+		// fall back to non-matching candidates
+		log.Info("falling back to non-matching available candidates")
+		sbx, pickErr = pickFromCandidates(ctx, nonMatchingCandidates, pickCache)
+	}
 	if pickErr == nil {
 		return AsSandbox(sbx, cache, client), infra.LockTypeUpdate, nil
 	}

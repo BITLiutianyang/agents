@@ -69,6 +69,11 @@ type SandboxSetSpec struct {
 	// ScaleStrategy indicates the ScaleStrategy that will be employed to
 	// create and delete Sandboxes in the SandboxSet.
 	ScaleStrategy SandboxSetScaleStrategy `json:"scaleStrategy,omitempty"`
+
+	// UpdateStrategy indicates the strategy that will be employed to
+	// update Sandboxes in the SandboxSet when the template changes.
+	// +optional
+	UpdateStrategy SandboxSetUpdateStrategy `json:"updateStrategy,omitempty"`
 }
 
 // SandboxSetScaleStrategy defines strategies for sandboxes scale.
@@ -77,6 +82,44 @@ type SandboxSetScaleStrategy struct {
 	// This field can control the changes rate of replicas for SandboxSet so as to minimize the impact for users' service.
 	// The scale will fail if the number of unavailable sandboxes were greater than this MaxUnavailable at scaling up.
 	// MaxUnavailable works only when scaling up.
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+}
+
+// RollingUpdateStrategyType is the type of rolling update strategy.
+type RollingUpdateStrategyType string
+
+const (
+	// RecreateUpdateStrategyType means the controller will delete old pods and create new ones.
+	RecreateUpdateStrategyType RollingUpdateStrategyType = "Recreate"
+)
+
+// SandboxSetUpdateStrategy defines strategies for rolling update.
+type SandboxSetUpdateStrategy struct {
+	// Type indicates the type of the update strategy.
+	// Default is Recreate.
+	// +kubebuilder:default=Recreate
+	Type RollingUpdateStrategyType `json:"type,omitempty"`
+
+	// Partition indicates the number or percentage of pods that should be kept old.
+	// Default is 0, meaning all pods will be updated.
+	// Partition can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
+	// Absolute number is calculated from percentage by rounding up.
+	// +optional
+	Partition *intstr.IntOrString `json:"partition,omitempty"`
+
+	// MaxSurge is the maximum number or percentage of pods that can be created above the desired number of pods.
+	// This can be useful to reduce the impact of updates on the available sandbox pool.
+	// MaxSurge can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
+	// Absolute number is calculated from percentage by rounding up.
+	// Default is 20%.
+	// +optional
+	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
+
+	// MaxUnavailable is the maximum number or percentage of pods that can be unavailable during the update.
+	// MaxUnavailable can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%).
+	// Absolute number is calculated from percentage by rounding down.
+	// Default is 20%.
+	// +optional
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
@@ -92,8 +135,17 @@ type SandboxSetStatus struct {
 	// AvailableReplicas is the number of available sandboxes, which are ready to be claimed.
 	AvailableReplicas int32 `json:"availableReplicas"`
 
-	// UpdateRevision is the template-hash calculated from `spec.template`.
+	// UpdateRevision is the hash label of the ControllerRevision created from `spec.template`.
+	// It represents the latest desired template version.
 	UpdateRevision string `json:"updateRevision,omitempty"`
+
+	// UpdatedReplicas is the number of sandboxes that have been updated to the UpdateRevision.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+
+	// UpdatedAvailableReplicas is the number of updated sandboxes that are available.
+	// +optional
+	UpdatedAvailableReplicas int32 `json:"updatedAvailableReplicas,omitempty"`
 
 	// conditions represent the current state of the SandboxSet resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.

@@ -163,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if !scaleUpSatisfied || !scaleDownSatisfied {
 			log.Info("skip scale down for scaleUpExpectation or scaleDownExpectation is not satisfied")
 		} else {
-			err = r.scaleDown(ctx, -delta, sbs, groups)
+			err = r.scaleDown(ctx, -delta, sbs, groups, newStatus.UpdateRevision)
 		}
 	}
 	if err != nil {
@@ -181,6 +181,45 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	} else {
 		log.Info("all dead sandboxes deleted", "cost", time.Since(start))
 	}
+
+	// Step 3: perform rolling update if needed
+	// update groups because status may change after scale
+	groups, err = r.groupAllSandboxes(ctx, sbs)
+	if err != nil {
+		log.Error(err, "failed to group sandboxes")
+		return ctrl.Result{}, err
+	}
+	updateGroups := buildUpdateGroups(groups, newStatus.UpdateRevision)
+	if needsUpdate(updateGroups) {
+		start = time.Now()
+		updateInfo := calculateUpdateInfo(sbs, updateGroups)
+		// Update status with update progress
+		newStatus.UpdatedReplicas = int32(updateInfo.CurrentUpdated)
+		newStatus.UpdatedAvailableReplicas = int32(len(updateGroups.UpdatedAvailable))
+
+		if !isUpdateComplete(updateInfo) {
+			// Consider scale expectations. If we don't wait for the previous creates to be observed,
+			// rapid reconcile cycles will each see the old sandbox group (no new sandboxes yet)
+			// and create another surge sandbox, causing the total surge to far exceed maxSurge before any deletes happen.
+			if !scaleUpSatisfied || !scaleDownSatisfied {
+				log.Info("skip rolling update: scale expectations not satisfied, waiting for pending operations")
+			} else {
+				log.Info("performing rolling update", "toUpdate", updateInfo.ToUpdate)
+				created, deleted, err := r.performRollingUpdate(ctx, sbs, updateGroups, updateInfo, newStatus.UpdateRevision)
+				if err != nil {
+					log.Error(err, "failed to perform rolling update")
+					allErrors = errors.Join(allErrors, err)
+				} else {
+					log.Info("rolling update step finished", "created", created, "deleted", deleted, "cost", time.Since(start))
+				}
+			}
+		}
+	} else {
+		// All sandboxes are up to date
+		newStatus.UpdatedReplicas = newStatus.Replicas
+		newStatus.UpdatedAvailableReplicas = newStatus.AvailableReplicas
+	}
+
 	log.Info("reconcile done", "totalCost", time.Since(totalStart))
 	if err = r.updateSandboxSetStatus(ctx, *newStatus, sbs); err != nil {
 		log.Error(err, "failed to update sandboxset status")
@@ -206,21 +245,27 @@ func (r *Reconciler) scaleUp(ctx context.Context, count int, sbs *agentsv1alpha1
 	return err
 }
 
-// scaleDown is allowed when both scaleUpExpectation and scaleDownExpectation are satisfied
-func (r *Reconciler) scaleDown(ctx context.Context, count int, sbs *agentsv1alpha1.SandboxSet, groups GroupedSandboxes) error {
+// scaleDown is allowed when both scaleUpExpectation and scaleDownExpectation are satisfied.
+// It prioritizes deleting old revision sandboxes first, then updated ones.
+func (r *Reconciler) scaleDown(ctx context.Context, count int, sbs *agentsv1alpha1.SandboxSet, groups GroupedSandboxes, updateRevision string) error {
 	log := logf.FromContext(ctx)
 	controllerKey := GetControllerKey(sbs)
 	lock := uuid.New().String()
 	log.Info("scale down", "count", count)
-	var toDelete []client.ObjectKey
-	for _, snapshot := range append(groups.Creating, groups.Available...) {
-		if count <= 0 {
-			break
+
+	// Separate candidates into old revision and updated revision.
+	candidates := append(groups.Creating, groups.Available...)
+	var oldCandidates, updatedCandidates []client.ObjectKey
+	for _, sbx := range candidates {
+		key := client.ObjectKeyFromObject(sbx)
+		if sbx.Labels[agentsv1alpha1.LabelTemplateHash] != updateRevision {
+			oldCandidates = append(oldCandidates, key)
+		} else {
+			updatedCandidates = append(updatedCandidates, key)
 		}
-		toDelete = append(toDelete, client.ObjectKeyFromObject(snapshot))
-		count--
 	}
-	successes, err := utils.DoItSlowlyWithInputs(toDelete, initialBatchSize, func(key client.ObjectKey) error {
+
+	deleteFunc := func(key client.ObjectKey) error {
 		scaleDownExpectation.ExpectScale(controllerKey, expectations.Delete, key.Name)
 		err := r.scaleDownSandbox(ctx, key, lock)
 		if err != nil {
@@ -228,10 +273,30 @@ func (r *Reconciler) scaleDown(ctx context.Context, count int, sbs *agentsv1alph
 			scaleDownExpectation.ObserveScale(controllerKey, expectations.Delete, key.Name)
 		}
 		return err
-	})
-	log.Info("scale down finished", "success", successes, "fails", len(toDelete)-successes)
-	return err
+	}
 
+	// Phase 1: Delete old revision sandboxes first
+	oldToDelete := oldCandidates[:min(count, len(oldCandidates))]
+	remaining := count - len(oldToDelete)
+	var totalSuccesses int
+	successes, err := utils.DoItSlowlyWithInputs(oldToDelete, initialBatchSize, deleteFunc)
+	totalSuccesses += successes
+	if err != nil {
+		log.Info("scale down finished", "success", totalSuccesses, "fails", len(oldToDelete)-successes)
+		return err
+	}
+
+	// Phase 2: Delete updated revision sandboxes if more needed
+	updatedToDelete := updatedCandidates[:min(remaining, len(updatedCandidates))]
+	successes, err = utils.DoItSlowlyWithInputs(updatedToDelete, initialBatchSize, deleteFunc)
+	totalSuccesses += successes
+	if err != nil {
+		log.Info("scale down finished", "success", totalSuccesses, "fails", len(updatedToDelete)-successes)
+		return err
+	}
+
+	log.Info("scale down finished", "success", totalSuccesses)
+	return nil
 }
 
 // calculateScaleDelta calculates the delta for scaling, considering MaxUnavailable limit.
